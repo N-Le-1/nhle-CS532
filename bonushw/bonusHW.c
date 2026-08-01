@@ -15,6 +15,7 @@ To run: ./bonusHW > output.txt
 #include <signal.h>
 #include <time.h>
 #include <stdbool.h>
+#include <semaphore.h>
 
 #define NUM_PRODUCERS 10
 #define NUM_CONSUMERS 20
@@ -27,8 +28,10 @@ int pipe_fd[2];
 
 // Mutexes for synchronization
 pthread_mutex_t write_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t read_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t print_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Semaphore for consumer synchronization
+sem_t read_sem;
 
 // Global flag for the graduate signal requirement
 volatile sig_atomic_t start_reading = 0;
@@ -62,11 +65,12 @@ void* producer(void* arg) {
 
     // Write the first 500 unique numbers to the pipe
     for (int i = 0; i < PRODUCER_ITEMS; i++) {
+        // Using a Mutex for writing to the pipe
         pthread_mutex_lock(&write_mutex);
         write(pipe_fd[1], &numbers[i], sizeof(int));
         pthread_mutex_unlock(&write_mutex);
 
-        // Bonus: Progress indicator (printed to stderr to avoid corrupting output redirection)
+        // Progress indicator (printed to stderr to avoid corrupting output redirection)
         if ((i + 1) % 100 == 0) {
             pthread_mutex_lock(&print_mutex);
             fprintf(stderr, "[Producer %d] Progress: %d/%d written\n", tid, i + 1, PRODUCER_ITEMS);
@@ -90,9 +94,10 @@ void* consumer(void* arg) {
     int current_number;
 
     for (int i = 0; i < CONSUMER_ITEMS; i++) {
-        pthread_mutex_lock(&read_mutex);
+        // Using a Semaphore for reading from the pipe
+        sem_wait(&read_sem);
         ssize_t bytes_read = read(pipe_fd[0], &current_number, sizeof(int));
-        pthread_mutex_unlock(&read_mutex);
+        sem_post(&read_sem);
 
         if (bytes_read == sizeof(int)) {
             thread_sum += current_number;
@@ -135,6 +140,12 @@ int main() {
         sa.sa_flags = 0;
         sigaction(SIGUSR1, &sa, NULL);
 
+        // Initialize the binary semaphore for reading (pshared=0, value=1)
+        if (sem_init(&read_sem, 0, 1) != 0) {
+            perror("Semaphore initialization failed");
+            exit(EXIT_FAILURE);
+        }
+
         fprintf(stderr, "[Child] Waiting for signal from parent to begin reading...\n");
 
         // Block until the parent sends SIGUSR1
@@ -165,6 +176,8 @@ int main() {
         // Print final result to standard output (stdout) for text file redirection
         printf("Final Average of all %d consumer thread sums: %.2f\n", NUM_CONSUMERS, average);
 
+        // Clean up semaphore
+        sem_destroy(&read_sem);
         close(pipe_fd[0]);
         exit(EXIT_SUCCESS);
     } 
